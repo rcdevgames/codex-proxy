@@ -14,7 +14,7 @@
 # Address the bridge listens on. Keep this on loopback.
 host: 127.0.0.1
 
-# Port the bridge listens on. Caddy proxies codex-gw.rcdevgames.net to this port.
+# Port the bridge listens on. The public reverse proxy (Caddy) forwards to this port.
 port: 8765
 
 # Gateway API keys that clients must send. Generate a long random value, e.g.:

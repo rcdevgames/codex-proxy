@@ -76,7 +76,7 @@ Perubahan pada `args`/`env`/`interpreter` **tidak** terbaca oleh `pm2 restart`; 
 
 ## Akses publik
 
-`https://codex-gw.rcdevgames.net` (Caddy/FrankenPHP di host yang sama) → `reverse_proxy 127.0.0.1:8765`, TLS Let's Encrypt, HTTP→HTTPS 308, dan respons SSE di-*flush* tanpa buffering. Autentikasi tetap key gateway (`Authorization: Bearer`), bukan kredensial upstream.
+Reverse proxy TLS (Caddy/FrankenPHP di host yang sama) → `reverse_proxy 127.0.0.1:8765`, TLS Let's Encrypt, HTTP→HTTPS 308, dan respons SSE di-*flush* tanpa buffering. Autentikasi tetap key gateway (`Authorization: Bearer`), bukan kredensial upstream.
 
 Host block-nya ada di `/etc/frankenphp/Caddyfile`. Perubahan dimuat lewat admin API (`POST http://127.0.0.1:2019/load`, `Content-Type: text/caddyfile`) karena `systemctl reload frankenphp` rusak di host ini (`226/NAMESPACE`).
 
