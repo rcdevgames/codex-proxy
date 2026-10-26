@@ -27,3 +27,8 @@ api_keys:
 
 # How often (seconds) the background check refreshes the upstream access token.
 refresh_check_seconds: 60
+
+# Secret key to open /monitor (single-field login page). Generate with:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# Leave empty to disable the monitor endpoints entirely.
+monitor_secret: "REPLACE_WITH_RANDOM_MONITOR_SECRET"

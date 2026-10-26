@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Bridge Monitor</title>
+<style>
+:root{--bg:#0f1115;--card:#171b22;--card2:#1d232d;--border:#262e3b;--text:#e6e9ef;--muted:#8a94a3;--accent:#4a6cf7;--green:#2fd6a3;--yellow:#e5b956;--red:#f56}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--bg);color:var(--text);padding:24px;line-height:1.5}
+h1{font-size:18px;margin-bottom:4px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:20px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px}
+.card h2{font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.metric{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:12px}
+.metric .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.metric .value{font-size:22px;font-weight:700;margin-top:4px}
+.metric .value.accent{color:var(--accent)}
+.win{font-size:12px;color:var(--muted);margin-top:6px}
+.win b{color:var(--text)}
+.bar{height:10px;background:#10131a;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin:8px 0 4px}
+.bar span{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--yellow,#e5b956));transition:width .6s}
+.bar.warn span{background:linear-gradient(90deg,var(--yellow),var(--red))}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 10px;font-size:13px;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+td.num,th.num{text-align:right}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+.toprow{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+a{color:var(--accent);text-decoration:none;cursor:pointer}
+a:hover{text-decoration:underline}
+.err{color:var(--red);font-size:13px;margin-top:8px}
+button.reset{background:#2a1e1e;color:#f88;border:1px solid #5a2c2c;padding:6px 14px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px}
+button.reset:hover{background:#3a2626}
+.hist{max-height:420px;overflow-y:auto}
+.live{color:var(--green);font-size:12px}
+.live::before{content:"● ";animation:blink 1.5s infinite}
+@keyframes blink{50%{opacity:.3}}
+.err-row td{color:var(--red);opacity:.8}
+
+/* --- Mobile friendly --- */
+@media (max-width:640px){
+  body{padding:12px}
+  .card{padding:12px;margin-bottom:14px}
+  .toprow{flex-direction:column;align-items:flex-start;gap:10px}
+  h1{font-size:16px}
+  .grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .metric .value{font-size:18px}
+  /* tables: horizontal scroll instead of squeeze */
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  th,td{padding:7px 8px;font-size:12px;white-space:nowrap}
+  .hist{max-height:55vh}
+  button.reset{padding:9px 16px;font-size:13px}
+}
+</style>
+</head>
+<body>
+<div class="toprow">
+  <div>
+    <h1>Codex Bridge Monitor</h1>
+    <div class="sub"><span class="live" id="live">auto-refresh 3s</span> · metadata only</div>
+  </div>
+  <div>
+    <button class="reset" onclick="if(confirm('Reset semua usage stats & history?')){fetch('/monitor/reset',{method:'POST'}).then(()=>location.reload())}">Reset Stats</button>
+    <a href="/monitor/logout">Logout</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pool Usage (upstream)</h2>
+  <div id="poolbox">memuat…</div>
+</div>
+
+<div class="card">
+  <h2>Ringkasan</h2>
+  <div class="grid" id="summarybox">memuat…</div>
+</div>
+
+<div class="card">
+  <h2>Per API Key</h2>
+  <div id="keybox">memuat…</div>
+</div>
+
+<div class="card">
+  <h2>History API Hit <span id="histcount" class="win"></span></h2>
+  <div class="hist" id="histbox">memuat…</div>
+</div>
+
+<div class="sub">Auto-refresh tiap 3s · JSON: <code>/monitor/json</code></div>
+
+<script>
+const fmt = n => (n||0).toLocaleString('id-ID');
+const pct = v => Math.max(0, Math.min(100, v||0));
+
+function poolHTML(d){
+  if(!d.HasPool) return `<p class="err">${d.PoolErr||'Tidak ada data pool.'}</p>`;
+  const w = d.Pool.windows||[];
+  const period = x => x.label==='session' ? 'reset per 5 jam' : 'reset per minggu';
+  // Bar = remaining quota: starts full (100%), shrinks as the pool is used.
+  return `<div class="grid">` + w.map(x=>{
+    const remain = pct(x.remaining_percent);
+    return `
+    <div class="metric">
+      <div class="label">${x.label} · ${period(x)}</div>
+      <div class="bar ${remain<=20?'warn':''}"><span style="width:${remain}%"></span></div>
+      <div class="win"><b>${Math.round(remain)}%</b> sisa · terpakai ${Math.round(pct(x.used_percent))}%</div>
+      <div class="win">Reset pada: <b>${x.reset_at ? new Date(x.reset_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'}) : '-'}</b> WIB</div>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+function summaryHTML(d){
+  return `
+    <div class="metric"><div class="label">Hari ini</div><div class="value">${fmt(d.DayTokens)}</div>
+      <div class="win">${fmt(d.DayReqs)} request</div></div>
+    <div class="metric"><div class="label">7 hari</div><div class="value">${fmt(d.SevenTok)}</div></div>
+    <div class="metric"><div class="label">30 hari</div><div class="value">${fmt(d.MonthTok)}</div></div>
+    <div class="metric"><div class="label">90 hari</div><div class="value">${fmt(d.NinetyTok)}</div></div>
+    <div class="metric"><div class="label">Pengguna tertinggi</div><div class="value accent" style="font-size:14px">${d.TopKey||'-'}</div>
+      <div class="win">${fmt(d.TopTokens)} tokens · ${(d.TopShare||0).toFixed(1)}%</div></div>`;
+}
+
+function keyRowsHTML(d){
+  if(!d.Rows || !d.Rows.length) return `<p class="win">Belum ada request tercatat.</p>`;
+  return `<div class="tablewrap"><table><thead><tr><th>API Key</th><th class="num">Req</th><th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th><th class="num">Share</th><th>Terakhir</th></tr></thead><tbody>` +
+    d.Rows.map(r=>`<tr><td class="mono">${r.Key}</td><td class="num">${fmt(r.Requests)}</td><td class="num">${fmt(r.Prompt)}</td><td class="num">${fmt(r.Completion)}</td><td class="num">${fmt(r.Total)}</td><td class="num">${(r.Share||0).toFixed(1)}%</td><td>${r.LastUsed}</td></tr>`).join('') +
+    `</tbody></table></div>`;
+}
+
+let histPage = 0;
+const HIST_PAGE = 10;
+
+function histHTML(d){
+  const all = (d.History||[]);
+  const pages = Math.max(1, Math.ceil(all.length/HIST_PAGE));
+  if(histPage >= pages) histPage = pages-1;
+  if(histPage < 0) histPage = 0;
+  document.getElementById('histcount').textContent = `(${all.length} total, maks 500)`;
+  if(!all.length) return `<p class="win">Belum ada hit tercatat.</p>`;
+  // newest first: history is stored oldest→newest, so page 0 = newest at the end
+  const start = all.length - 1 - histPage*HIST_PAGE;
+  const rows = [];
+  for(let i=0; i<HIST_PAGE; i++){
+    const idx = start - i;
+    if(idx < 0) break;
+    rows.push(all[idx]);
+  }
+  return `<div class="tablewrap"><table><thead><tr><th>Waktu (UTC)</th><th>API Key</th><th>Model</th><th class="num">In</th><th class="num">Cached</th><th class="num">Out</th><th class="num">TTFT</th><th class="num">Durasi</th></tr></thead><tbody>` +
+    rows.map(e=>`<tr><td>${e.at}</td><td class="mono">${e.key}</td><td>${e.model||'-'}</td><td class="num">${fmt(e.prompt_tokens)}</td><td class="num">${fmt(e.cached_tokens)}</td><td class="num">${fmt(e.completion_tokens)}</td><td class="num">${e.ttft_ms}ms</td><td class="num">${e.duration_ms}ms</td></tr>`).join('') +
+    `</tbody></table></div>
+    <div style="display:flex;justify-content:space-between;margin-top:10px">
+      <a onclick="histPage++; if(histPage>=${pages}) histPage=${pages-1}; renderLast();">← lebih baru</a>
+      <span class="win">halaman ${histPage+1}/${pages}</span>
+      <a onclick="if(histPage>0){histPage--; renderLast();}">lebih lama →</a>
+    </div>`;
+}
+
+let lastData = null;
+function renderLast(){
+  if(lastData) document.getElementById('histbox').innerHTML = histHTML(lastData);
+}
+
+function render(d){
+  lastData = d;
+  document.getElementById('poolbox').innerHTML = poolHTML(d);
+  document.getElementById('summarybox').innerHTML = summaryHTML(d);
+  document.getElementById('keybox').innerHTML = keyRowsHTML(d);
+  document.getElementById('histbox') && (document.getElementById('histbox').innerHTML = histHTML(d));
+}
+
+// Poll /monitor/json every 3 seconds — simple auto-refresh, no SSE.
+async function poll(){
+  try {
+    const res = await fetch('/monitor/json', {cache:'no-store'});
+    if(res.status === 303 || res.status === 401){ location.href='/monitor'; return; }
+    render(await res.json());
+    document.getElementById('live').textContent = 'auto-refresh 3s';
+  } catch(e) {
+    document.getElementById('live').textContent = 'offline, mencoba lagi…';
+  }
+}
+poll();
+setInterval(poll, 3000);
+
+</script>
+</body>
+</html>

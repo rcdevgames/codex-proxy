@@ -4,3 +4,4 @@ auth.json
 codex-bridge
 *.log
 auth.lock
+usage-stats.json

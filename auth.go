@@ -31,6 +31,9 @@ type gateway struct {
 	modelsMu                     sync.Mutex
 	models                       []string
 	modelsAt                     time.Time
+	usageStats                   *usageTracker
+	monitorSecret                string
+	statsPath                    string
 }
 
 type tokens struct {

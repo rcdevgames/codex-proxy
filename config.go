@@ -17,6 +17,7 @@ type config struct {
 	Port                int      `yaml:"port"`
 	APIKeys             []string `yaml:"api_keys"`
 	RefreshCheckSeconds int      `yaml:"refresh_check_seconds"`
+	MonitorSecret       string   `yaml:"monitor_secret"`
 }
 
 func loadConfig(configPath, binaryPath string) (config, string, error) {

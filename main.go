@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -34,10 +35,25 @@ func (g *gateway) handler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", g.responses)
 	mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	mux.HandleFunc("POST /v1/images/generations", g.images)
+	// Monitor routes: login page, protected dashboard/jsON, logout.
+	mux.HandleFunc("/monitor", g.monitorLogin)
+	mux.HandleFunc("/monitor/logout", g.monitorLogout)
+	mux.HandleFunc("/monitor/dashboard", g.protectMonitor(g.monitorDashboard))
+	// API key routes must not be tracked; monitor routes bypass key check.
+	mux.HandleFunc("/monitor/json", g.protectMonitor(g.monitorAPI))
+	mux.HandleFunc("/monitor/reset", g.protectMonitor(g.monitorReset))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/monitor") {
+			// monitor endpoints bypass the gateway API key check
+			mux.ServeHTTP(w, r)
+			return
+		}
 		if !g.authorized(r) {
 			apiError(w, 401, "authentication_error", "invalid API key")
 			return
+		}
+		if g.usageStats != nil {
+			g.usageStats.record(g.requestKey(r), 0, 0)
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -110,6 +126,8 @@ func (g *gateway) responses(w http.ResponseWriter, r *http.Request) {
 	if body == nil {
 		return
 	}
+	started := time.Now()
+	var firstByteAt time.Time
 	resp, err := g.send(r.Context(), body)
 	if err != nil {
 		apiError(w, 502, "upstream_error", err.Error())
@@ -123,7 +141,44 @@ func (g *gateway) responses(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
-	_, _ = io.Copy(w, resp.Body)
+	// Pass the stream through while timing TTFT and capturing the usage from
+	// the response.completed event (metadata only) for the monitor history.
+	key := g.requestKey(r)
+	model := text(body["model"])
+	var usage any
+	flusher, _ := w.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	for scanner.Scan() {
+		if firstByteAt.IsZero() {
+			firstByteAt = time.Now()
+		}
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			var event map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) == nil &&
+				text(event["type"]) == "response.completed" {
+				usage = object(event["response"])["usage"]
+			}
+		}
+		if _, werr := w.Write([]byte(line + "\n")); werr != nil {
+			break
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	ttft := int64(0)
+	if !firstByteAt.IsZero() {
+		ttft = firstByteAt.Sub(started).Milliseconds()
+	}
+	in, out, cached := usageNumbers(usage)
+	g.usageStats.addTokens(key, in, out)
+	g.usageStats.addEvent(usageEvent{
+		At: time.Now().UTC().Format(time.RFC3339), Key: key, Endpoint: "/v1/responses",
+		Model: model, Prompt: in, Completion: out, Cached: cached,
+		TTFTms: ttft, Durationms: time.Since(started).Milliseconds(),
+	})
 }
 func messageText(v any) (string, error) {
 	switch x := v.(type) {
@@ -185,6 +240,9 @@ func (g *gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := text(body["model"])
+	key := g.requestKey(r)
+	started := time.Now()
+	var firstDeltaAt time.Time
 	request := map[string]any{"model": model, "input": input, "stream": true, "store": false}
 	if v, ok := body["max_completion_tokens"]; ok {
 		request["max_output_tokens"] = v
@@ -229,13 +287,30 @@ func (g *gateway) chat(w http.ResponseWriter, r *http.Request) {
 		case "response.output_text.delta":
 			delta := text(event["delta"])
 			output.WriteString(delta)
+			if firstDeltaAt.IsZero() {
+				firstDeltaAt = time.Now()
+			}
 			if stream {
 				sendChunk(map[string]any{"content": delta}, nil)
 			}
 		case "response.completed":
 			u := object(object(event["response"])["usage"])
 			in, out := number(u["input_tokens"]), number(u["output_tokens"])
+			cached := int64(0)
+			if d := object(u["input_tokens_details"]); d != nil {
+				cached = int64(number(d["cached_tokens"]))
+			}
 			usage = map[string]any{"prompt_tokens": in, "completion_tokens": out, "total_tokens": in + out}
+			g.usageStats.addTokens(key, int64(in), int64(out))
+			ttft := int64(0)
+			if !firstDeltaAt.IsZero() {
+				ttft = firstDeltaAt.Sub(started).Milliseconds()
+			}
+			g.usageStats.addEvent(usageEvent{
+				At: time.Now().UTC().Format(time.RFC3339), Key: key, Endpoint: "/v1/chat/completions",
+				Model: model, Prompt: int64(in), Completion: int64(out), Cached: cached,
+				TTFTms: ttft, Durationms: time.Since(started).Milliseconds(),
+			})
 		case "response.failed":
 			if stream {
 				writeSSE(w, map[string]any{"error": map[string]any{"message": "upstream response failed"}})
@@ -266,6 +341,39 @@ func writeSSE(w http.ResponseWriter, v any) {
 	}
 }
 func randomID() string { var b [12]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
+
+// usageNumbers extracts (input, output, cached) token counts from a captured
+// upstream usage object; zero when the shape is unrecognized.
+func usageNumbers(v any) (int64, int64, int64) {
+	u := object(v)
+	if u == nil {
+		return 0, 0, 0
+	}
+	in, out := int64(number(u["input_tokens"])), int64(number(u["output_tokens"]))
+	cached := int64(0)
+	if d := object(u["input_tokens_details"]); d != nil {
+		cached = int64(number(d["cached_tokens"]))
+	}
+	return in, out, cached
+}
+
+// statsFlusher periodically persists usage stats so restarts keep history.
+func (g *gateway) statsFlusher(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = g.usageStats.flush()
+			return
+		case <-ticker.C:
+			if err := g.usageStats.flush(); err != nil {
+				log.Printf("[monitor] stats flush failed: %v", err)
+			}
+		}
+	}
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "gateway YAML config file")
 	flag.Parse()
@@ -277,12 +385,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	g := &gateway{keys: cfg.APIKeys, authPath: authPath, client: &http.Client{Timeout: 3 * time.Minute}}
+	g := &gateway{keys: cfg.APIKeys, authPath: authPath, client: &http.Client{Timeout: 3 * time.Minute}, monitorSecret: cfg.MonitorSecret, statsPath: filepath.Join(filepath.Dir(authPath), "usage-stats.json")}
+	g.usageStats = newUsageTracker(g.statsPath)
 	log.Printf("auth source: %s", authPath)
 	g.logCredentialState()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go g.scheduler(ctx, time.Duration(cfg.RefreshCheckSeconds)*time.Second)
+	go g.statsFlusher(ctx, 15*time.Second)
 	log.Printf("listening on %s", cfg.address())
 	srv := &http.Server{Addr: cfg.address(), Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
