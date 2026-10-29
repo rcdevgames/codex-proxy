@@ -39,6 +39,16 @@ Mas bos bisa mengirim gambar ke codex-bridge untuk diedit (ganti warna objek, ga
   - Guard: body tanpa `images` → `400 {"message":"images is required"}` tanpa menyentuh upstream.
 - Log gateway mencatat `[images] ok endpoint=/images/edits status=200` untuk kedua jalur.
 
+## Catatan model gambar (2026-10-29)
+
+Upstream **tidak memvalidasi** field `model` di `/images/generations` maupun `/images/edits`:
+
+- `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`, bahkan `gpt-image-9` (nama tidak ada) semuanya dijawab HTTP 200.
+- `size` juga tidak dihormati: permintaan `1024x1024` dan `2048x2048` sama-sama menghasilkan `1254x1254`.
+- `quality` dikembalikan sesuai input, tetapi pemilihan model nyata ada di sisi backend (fixed), bukan di request.
+
+Jadi `gpt-image-1-mini` di contoh hanyalah label; mengganti nama model tidak mengubah output di jalur ChatGPT Codex ini. Kontrol model/ukuran/transparansi yang sebenarnya hanya tersedia di jalur CLI fallback `image_gen.py` dengan `OPENAI_API_KEY` (api.openai.com), yang belum dikonfigurasi di host ini.
+
 ## Sisa / pending
 
 - Dukungan `mask` sudah diteruskan sebagai `{"image_url":...}` tetapi belum diuji ke upstream (perlu gambar + mask nyata).
