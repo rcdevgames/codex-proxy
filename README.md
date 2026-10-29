@@ -35,7 +35,7 @@ curl -H 'Authorization: Bearer <apikey>' -H 'Content-Type: application/json' \
   http://127.0.0.1:8765/v1/chat/completions
 ```
 
-Endpoint: `GET /usages` atau `/v1/usages` (plan, sisa kuota per jendela, waktu reset UTC, reset tersimpan), `GET /v1/models` (daftar model dari upstream, lihat bawah), `POST /v1/chat/completions` (teks, streaming/nonstreaming), `POST /v1/responses` (SSE Responses untuk klien Codex). Semua endpoint memerlukan API key gateway. `stream` di `/v1/responses` dipaksa `true` karena upstream Codex adalah SSE; klien yang meminta JSON nonstreaming untuk endpoint itu tidak didukung. Input tools pada `/v1/responses` diteruskan apa adanya; terjemahan tools untuk chat completions belum tersedia. Format Chat Completions masih subset, bukan semua parameter [OI].
+Endpoint: `GET /usages` atau `/v1/usages` (plan, sisa kuota per jendela, waktu reset UTC, reset tersimpan), `GET /v1/models` (daftar model dari upstream, lihat bawah), `POST /v1/chat/completions` (teks, streaming/nonstreaming), `POST /v1/responses` (SSE Responses untuk klien Codex), `POST /v1/images/generations` dan `POST /v1/images/edits` (lihat bagian Gambar). Semua endpoint memerlukan API key gateway. `stream` di `/v1/responses` dipaksa `true` karena upstream Codex adalah SSE; klien yang meminta JSON nonstreaming untuk endpoint itu tidak didukung. Input tools pada `/v1/responses` diteruskan apa adanya; terjemahan tools untuk chat completions belum tersedia. Format Chat Completions masih subset, bukan semua parameter [OI].
 
 ## Model
 
@@ -59,6 +59,28 @@ env_key = "CODEX_BRIDGE_API_KEY"
 ```
 
 Set `CODEX_BRIDGE_API_KEY` di shell klien ke salah satu key dari `config.yaml`; jangan tulis key langsung di TOML. Konfigurasi ini berhasil diuji end-to-end dengan `codex exec` (provider `local_bridge`, model `gpt-6-sol`, respons `OK`, exit 0). Itu membuktikan jalur dasar, bukan seluruh fitur CLI. Autentikasi gateway memakai key YAML; autentikasi upstream memakai `auth.json` Hermes.
+
+## Gambar
+
+Dua endpoint, keduanya menerima JSON dan mengembalikan `data[].b64_json` dari upstream:
+
+- `POST /v1/images/generations` — body OpenAI Images (`model`, `prompt`, `size`, `quality`, ...).
+- `POST /v1/images/edits` — mengedit gambar yang dikirim. Upstream memakai bentuk JSON `images: [{"image_url":"data:image/png;base64,..."}]`, **bukan** multipart. Gateway menerima dua-duanya: JSON native, atau `multipart/form-data` (`image`/`image[]`/`images` + field `prompt`, `model`, `size`, `quality`, `background`, `output_format`, `moderation`, `n`, `output_compression`, dan `mask` opsional). Unggahan diubah menjadi data URL sebelum diteruskan.
+
+Batas lokal: prompt ≤4000 karakter, `n=1`, body ≤32MB, tiap gambar ≤50MB, maksimal 16 gambar input; `stream`/`store` dibuang; error validasi tidak pernah menggemakan isi prompt.
+
+```bash
+# edit lewat multipart (paling praktis)
+curl -s -H 'Authorization: Bearer ***' \
+  -F model=gpt-image-1-mini -F quality=low \
+  -F 'prompt=ubah kotak merah menjadi biru' \
+  -F image=@foto.png \
+  http://127.0.0.1:8765/v1/images/edits > out.json
+
+jq -r '.data[0].b64_json' out.json | base64 -d > hasil.png
+```
+
+Model gambar yang diterima ditentukan akun (mis. `gpt-image-1-mini`, `gpt-image-1`, `gpt-image-1.5`, `gpt-image-2`); model teks Codex (`gpt-6-sol`) tidak berlaku di endpoint ini. Endpoint gambar tidak dicatat di monitor usage karena tidak mengembalikan hitungan token teks.
 
 ## Menjalankan lewat PM2
 

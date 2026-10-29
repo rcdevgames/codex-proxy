@@ -35,6 +35,7 @@ func (g *gateway) handler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", g.responses)
 	mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	mux.HandleFunc("POST /v1/images/generations", g.images)
+	mux.HandleFunc("POST /v1/images/edits", g.imageEdits)
 	// Monitor routes: login page, protected dashboard/jsON, logout.
 	mux.HandleFunc("/monitor", g.monitorLogin)
 	mux.HandleFunc("/monitor/logout", g.monitorLogout)
